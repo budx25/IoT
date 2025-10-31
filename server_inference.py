@@ -10,7 +10,7 @@ model = None
 def inference():
     data = request.get_json(force=True)
     ldr = float(data.get("ldr", 0))
-    ldr_ma5 = ldr  # placeholder: bisa diganti moving avg realtime
+    ldr_ma5 = ldr
     X = np.array([[ldr, ldr_ma5]])
     pred = model.predict(X)
     angle = int(max(0, min(180, round(pred[0]))))

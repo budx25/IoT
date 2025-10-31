@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Servo + LDR Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root{
+      --bg: #f6f7fb;
+      --card: #fff;
+      --muted: #666;
+      --accent: #2b6cb0;
+    }
+    body { font-family: Arial, sans-serif; margin: 16px; background:var(--bg); color:#111; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; margin:0 0 8px 0; }
+    .layout {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      align-content: start;
+    }
+    .left { flex: 1 1 0; min-width: 320px; }
+    .right { width: 320px; flex: 0 0 320px; }
+
+    .card { background:var(--card); border:1px solid #e6e9ee; padding:12px; border-radius:8px;
+           box-shadow: 0 1px 4px rgba(16,24,40,0.04); }
+    .chart-card { padding: 14px 14px 10px 14px; display:flex; flex-direction:column; height: 560px; }
+    canvas { background: white; border-radius:6px; width:100%; height:100%; display:block; }
+    .controls { display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
+    .controls label { display:flex; gap:6px; align-items:center; color:var(--muted); }
+    input[type="number"] { width:70px; padding:6px; border-radius:6px; border:1px solid #ccc; }
+    button { padding:8px 10px; border-radius:6px; cursor:pointer; border:1px solid #cfcfcf; background:#fff; }
+    .latest { margin-top:8px; font-size:0.95rem; }
+    .meta { color:var(--muted); font-size:0.9rem; margin-bottom:8px; }
+    .small { font-size:0.85rem; color:var(--muted); }
+    .row-between { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+
+    /* responsive: stack on small screens */
+    @media (max-width: 880px) {
+      .layout { flex-direction: column; }
+      .right { width: 100%; flex: 1 1 0; }
+      .chart-card { height: 360px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Servo + LDR Dashboard</h1>
+    <div class="layout">
+      <div class="left card chart-card">
+        <div class="row-between" style="margin-bottom:8px;">
+          <div class="meta">Realtime LDR readings & predicted servo angle</div>
+          <div class="small">Polling: <span id="poll-interval-label">1s</span></div>
+        </div>
+        <canvas id="mainChart"></canvas>
+      </div>
+
+      <div class="right card">
+        <div style="margin-bottom:10px;">
+          <strong>Latest</strong>
+          <div id="latest" class="latest" style="margin-top:8px; padding:8px; background:#fafafa; border-radius:6px; border:1px solid #f0f0f0;">
+            No data yet
+          </div>
+        </div>
+
+        <div style="margin-top:10px;">
+          <strong>Controls</strong>
+          <div class="controls" style="margin-top:8px;">
+            <label>Polling (s)
+              <input id="poll-interval" type="number" min="0.5" step="0.5" value="1">
+            </label>
+            <button id="btn-refresh">Refresh</button>
+            <button id="btn-clear">Clear Logs</button>
+          </div>
+          <div class="small">Use <em>Refresh</em> to fetch immediately. Clear will erase logs.csv (demo only).</div>
+        </div>
+
+        <hr style="margin:12px 0; border:none; border-top:1px solid #eee;">
+
+        <div>
+          <strong>Debug & Export</strong>
+          <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="btn-download">Open /data JSON</button>
+            <button id="btn-sim">Start Random Sim</button>
+          </div>
+          <div class="small" style="margin-top:8px;">
+            - Open /data to inspect raw timestamps. <br>
+            - "Start Random Sim" triggers requests from your browser (no server-side simulator).
+          </div>
+        </div>
+
+        <hr style="margin:12px 0; border:none; border-top:1px solid #eee;">
+
+        <div style="margin-top:8px;">
+          <strong>Status</strong>
+          <div id="status" class="small" style="margin-top:6px;color:var(--muted);">Idle</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const ctx = document.getElementById('mainChart').getContext('2d');
+let chart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      { label: 'LDR', data: [], yAxisID: 'y', tension:0.3, pointRadius:0, borderColor: '#2b6cb0' },
+      { label: 'Angle', data: [], yAxisID: 'y1', tension:0.3, borderDash:[6,4], pointRadius:0, borderColor: '#d69e2e' }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: { display: true, ticks: { maxRotation:45 } },
+      y: { type:'linear', position:'left', title:{display:true,text:'LDR (0-4095)'}, suggestedMin:0, suggestedMax:4200 },
+      y1: { type:'linear', position:'right', title:{display:true,text:'Angle (0-180)'}, suggestedMin:0, suggestedMax:180, grid:{drawOnChartArea:false} }
+    },
+    plugins: { legend: { position:'top' } }
+  }
+});
+
+const pollInput = document.getElementById('poll-interval');
+const pollLabel = document.getElementById('poll-interval-label');
+const btnRefresh = document.getElementById('btn-refresh');
+const btnClear = document.getElementById('btn-clear');
+const btnDownload = document.getElementById('btn-download');
+const btnSim = document.getElementById('btn-sim');
+const latestDiv = document.getElementById('latest');
+const statusDiv = document.getElementById('status');
+
+let intervalSec = parseFloat(pollInput.value);
+let pollTimer = null;
+let simTimer = null;
+
+async function fetchData() {
+  try {
+    statusDiv.textContent = 'Fetching data...';
+    const res = await fetch('/data?limit=300');
+    const json = await res.json();
+    const labels = json.timestamps.map(ts => new Date(ts).toLocaleTimeString());
+    const ldr = json.ldr;
+    const angle = json.angle;
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = ldr;
+    chart.data.datasets[1].data = angle;
+    chart.update();
+    if (labels.length) {
+      const i = labels.length - 1;
+      latestDiv.innerHTML = `<div><strong>${labels[i]}</strong></div><div>LDR: ${ldr[i]}</div><div>Angle: ${angle[i]}</div>`;
+    } else {
+      latestDiv.innerHTML = "No data yet";
+    }
+    statusDiv.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    console.error("fetch error", e);
+    statusDiv.textContent = 'Error fetching data';
+  }
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(fetchData, intervalSec * 1000);
+  pollLabel.textContent = intervalSec + 's';
+}
+
+pollInput.addEventListener('change', () => {
+  intervalSec = Math.max(0.5, parseFloat(pollInput.value) || 1);
+  startPolling();
+});
+btnRefresh.addEventListener('click', fetchData);
+btnClear.addEventListener('click', async () => {
+  if (!confirm("Clear logs?")) return;
+  await fetch('/clear_logs', { method:'POST' });
+  fetchData();
+});
+btnDownload.addEventListener('click', () => {
+  
+  window.open('/data?limit=10000', '_blank');
+});
+
+btnSim.addEventListener('click', async () => {
+  if (simTimer) {
+    clearInterval(simTimer);
+    simTimer = null;
+    btnSim.textContent = 'Start Random Sim';
+    statusDiv.textContent = 'Stopped simulator';
+    return;
+  }
+  btnSim.textContent = 'Stop Random Sim';
+  statusDiv.textContent = 'Simulator running (sending random LDR)';
+  simTimer = setInterval(async () => {
+    const ldr = Math.floor(Math.random()*4096);
+    try {
+      await fetch('/inference', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ ldr: ldr, device: 'browser-sim' })
+      });
+
+      if (Math.random() < 0.25) fetchData();
+    } catch(e) {
+      console.error('sim send error', e);
+    }
+  }, Math.max(200, intervalSec*1000));
+});
+
+/* init */
+fetchData();
+startPolling();
+</script>
+</body>
+</html>

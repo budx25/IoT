@@ -8,7 +8,6 @@ import math
 
 def main(input_csv, out_model, random_state=42):
     df = pd.read_csv(input_csv)
-    # simple preprocessing: add moving average features
     df['ldr_ma5'] = df['ldr_value'].rolling(5, min_periods=1).mean()
     X = df[['ldr_value', 'ldr_ma5']].fillna(0).values
     y = df['servo_angle'].values
@@ -19,8 +18,8 @@ def main(input_csv, out_model, random_state=42):
 
     preds = model.predict(X_test)
     mae = mean_absolute_error(y_test, preds)
-    mse = mean_squared_error(y_test, preds)           # returns MSE
-    rmse = math.sqrt(mse)                             # convert to RMSE (compatible)
+    mse = mean_squared_error(y_test, preds)           
+    rmse = math.sqrt(mse)                             
     print(f"MAE: {mae:.3f}, RMSE: {rmse:.3f}")
 
     joblib.dump(model, out_model)
